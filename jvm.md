@@ -28,6 +28,8 @@
 
 线程私有区主要包含三个区域：**虚拟机栈**，**本地方法栈**，**程序计数器**。
 
+注意的是，在HotSpot虚拟机中并不区分虚拟机栈和本地方法栈
+
 线程共享区主要包含：堆区，方法区。
 
 
@@ -56,11 +58,20 @@ Java虚拟机栈也是线程私有的，他的生命周期和线程相同。
 
 局部变量表的单位为Slot，其中64位长度的long，double占用2个Slot，其余的占一个，局部变量表的内存空间是编译期间完成分配的
 
+当进入一个方法时这个方法需要在帧中分配多大的局部变量空间是完全确定的，在方法运行期间不会改变局部变量表的大小。
+
+在Java规范中，对这个区域规定了两种异常情况：
+
+- 如果线程请求的栈深度大于虚拟机所允许的深度，将抛出StackOverflowError异常；
+- 如果虚拟机栈可以动态扩展，并且在扩展时无法申请到足够的内存，会抛出OutOfMemoryError异常
+
+
+
 
 
 ### 3、本地方法栈
 
-本地方法栈使用Native方法
+本地方法栈为使用到的Native方法服务
 
 凡带了`Native`关键字的，说明java的作用范围达不到了，回去调用底层C语言的库!
 
@@ -80,11 +91,15 @@ java堆是被所有线程共享的一块内存区域，在虚拟机启动时创�
 
 Java堆是垃圾收集器管理的主要区域。
 
-从内存回收的角度上看，由于现在收集器基本都采用分代手机算法，所以Java堆中还可以细分为：新生代和老年代；再细致一点的有Eden空间，From Survivor空间，To Survivor空间等
+从内存回收的角度上看，由于现在收集器基本都采用分代收集算法，所以Java堆中还可以细分为：新生代和老年代；再细致一点的有Eden空间，From Survivor空间，To Survivor空间等
 
 从内存分配的角度上看，线程共享的Java堆中可能划分多个线程私有的分配缓冲区
 
-当前主流的虚拟机都是按照可扩展来实现的（-Xmx，-Xms）
+根据Java虚拟机规范的约定，Java堆可以处于物理上不连续的内存空间中，只要逻辑上是连续的就可以了。
+
+当前主流的虚拟机都是按照可扩展来实现的（-Xmx，-Xms），如果没有内存完成实例分配，堆也无法在扩展时，将会抛出OutOfMemoryError
+
+
 
 
 
@@ -96,7 +111,7 @@ Java堆是垃圾收集器管理的主要区域。
 
 不过HotSpot虚拟机现在也有放弃永久代并逐步改为采用Native Memory来实现方法区的规划了
 
-在JDK6的时候就有这个计划了，到了JDK7已经把原本放在永久代的常量池，静态变量移出，带了JDK8，终于完全废弃了永久代这个概念，在本地内存中实现了元空间来代替。
+在JDK6的时候就有这个计划了，到了JDK7已经把原本放在永久代的字符串常量池移出，带了JDK8，终于完全废弃了永久代这个概念，在本地内存中实现了元空间来代替。
 
 
 
@@ -108,13 +123,204 @@ Java堆是垃圾收集器管理的主要区域。
 
 Java语言不要求常量一定只有编译期才会产生，也就是并非预置入Class文件中常量池的内容才能进入方法区运行时常量池，运行期间也可能将新的常量放入池中 -> String类的intern()方法。
 
+运行时常量池是方法区的一部分，自然受到方法区内存的限制，当常量池无法在申请到内存时会抛出OutOfMemoryError异常
+
+
+
 
 
 ### 6、直接内存
 
 直接内存不是虚拟机运行时数据区的一部分，但是这部分内存也被频繁地使用，而且也可能导致OOM，所以放在这里一起讲
 
-在JDK1.4引入了I/O流，它可以使用Native函数直接分配堆外内存，然后通过一个存储在Java堆中的DirectByteBuffer对象作为这块内存的引用进行操作，这就避免了Java堆和Native堆中来回复制数据。
+在JDK1.4引入了NIO（New Input/Output）类，引入了一种基于通道和缓存区的I/O方式
+
+它可以使用Native函数直接分配堆外内存，然后通过一个存储在Java堆中的DirectByteBuffer对象作为这块内存的引用进行操作，这就避免了Java堆和Native堆中来回复制数据。
+
+直接内存不会受到Java堆大小的限制。
+
+
+
+### 7、实验OOM异常
+
+在Java虚拟机规范的描述中，除了程序计数器外，虚拟机内存的其他几个运行时区域都有发生OOM的可能。
+
+我们根据HotSpot虚拟机，来进行实验
+
+
+
+> Java堆溢出
+
+Java堆是用来存储对象实例，只要不断地创建对象，并且保证GC Roots到对象之间有可达路径来避免垃圾回收机制清楚这些对象，那么在对象数量到达最大堆的容量限制后就会产生内存溢出异常。
+
+我们来试试下面的例子
+
+```java
+/**
+ * -Xms20m -Xmx20m -XX:+HeapDumpOnOutOfMemoryError
+ */
+public class MyTest {
+
+    static class OOMObject{}
+
+    public static void main(String[] args) {
+        List<OOMObject> list = new ArrayList<>();
+        while(true){
+            list.add(new OOMObject());
+        }
+    }
+}
+```
+
+运行结果：
+
+![image-20221022110917064](jvm.assets/image-20221022110917064.png)
+
+这时候通过MAT（Memory Analyzer）打开dump文件，重点是确定是内存泄露还是内存溢出
+
+![image-20221022111232456](jvm.assets/image-20221022111232456.png)
+
+如果是内存泄露，可进一步通过工具查看泄露对象到GC Root 引用链的信息 ，就可以比较准确地定位出泄露代码的位置。
+
+如果是内存溢出，那就应该检查虚拟机的堆参数（-Xmx 与 -Xms），与机器物理内存对比看是否还可以调大，从代码上检查是否存在某些对象声明周期过长，持有状态时间过长的情况，尝试减少程序运行期的内存消耗。
+
+
+
+> 虚拟机栈和本地方法栈溢出
+
+由于HotSpot虚拟机中并不区分虚拟机栈和本地方法栈，因此，对于HotSpot爱说，虽然 -Xoss参数（设置本地方法栈大小）存在，但实际上是无效的。
+
+栈容量只由 -Xss参数设定。
+
+关于虚拟机栈和本地方法栈，在Java虚拟机规范中描述了两种异常：
+
+- 如果线程请求的栈深度大于虚拟机所允许的最大深度，将抛出StackOverFlowError异常
+- 如果虚拟机在扩展栈时无法申请到足够的内存空间，则抛出OutOfMemoryError异常
+
+《Java虚拟机规范》明确允许JVM实现自行选择是否支持栈的动态扩展，而HotSpot虚拟机的选择是不支持扩展，所以除非在创建线程申请内存时就因无法获得足够内存而出现OOM，否则在线程运行时是不会因为扩展而导致内存溢出的，只会因为栈容量无法容纳新的栈帧而导致StackOverflowError。
+
+我们来看看是否能让HotSpot OOM：
+
+使用-Xss减少栈内存容量
+
+```java
+/**
+ * -Xss128k -XX:+HeapDumpOnOutOfMemoryError
+ */
+public class MyTest {
+
+    private int stackLength = 1;
+
+    public void stackLeak() {
+        stackLength ++;
+        stackLeak();
+    }
+
+    public static void main(String[] args) {
+        MyTest myTest = new MyTest();
+        try {
+            myTest.stackLeak();
+        } catch (Throwable e) {
+            System.out.println("stack length: " + myTest.stackLength);
+            throw e;
+        }
+    }
+}
+```
+
+运行结果：
+
+![image-20221022114458637](jvm.assets/image-20221022114458637.png)
+
+
+
+定义大量局部变量，增大此方法帧中本地变量表的长度
+
+```java
+public class MyTest2 {
+
+
+    private static int stackLength = 0;
+
+    public static void test(){
+        long unUser1, unUser2, unUser3, unUser4, unUser5, unUser6, unUser7, unUser8, unUser9, unUser10,
+        unUser11, unUser12, unUser13, unUser14, unUser15, unUser16, unUser17, unUser18, unUser19, unUser20,
+        unUser21, unUser22, unUser23, unUser24, unUser25, unUser26, unUser27, unUser28, unUser29, unUser30,
+        unUser31, unUser32, unUser33, unUser34, unUser35, unUser36, unUser37, unUser38, unUser39, unUser40,
+        unUser41, unUser42, unUser43, unUser44, unUser45, unUser46, unUser47, unUser48, unUser49, unUser50;
+        stackLength ++;
+        test();
+        unUser1 = unUser2 = unUser3 = unUser4 = unUser5 = unUser6 = unUser7 = unUser8 = unUser9 = unUser10 =
+        unUser11 = unUser12 = unUser13 = unUser14 = unUser15 = unUser16 = unUser17 = unUser18 = unUser19 = unUser20 =
+        unUser21 = unUser22 = unUser23 = unUser24 = unUser25 = unUser26 = unUser27 = unUser28 = unUser29 = unUser30 =
+        unUser31 = unUser32 = unUser33 = unUser34 = unUser35 = unUser36 = unUser37 = unUser38 = unUser39 = unUser40 =
+        unUser41 = unUser42 = unUser43 = unUser44 = unUser45 = unUser46 = unUser47 = unUser48 = unUser49 = unUser50 = 0;
+    }
+
+    public static void main(String[] args) {
+        try {
+            test();
+        } catch (Throwable e) {
+            System.out.println("stack length: " + stackLength);
+            throw e;
+        }
+    }
+}
+```
+
+运行结果：
+
+![image-20221022135909367](jvm.assets/image-20221022135909367.png)
+
+可以看到，无论是由于栈帧太深还是虚拟机栈容量太小，当新的栈帧内存无法分配时，HotPost都抛SOF。如果是允许动态扩展，相同代码则会导致不同情况。
+
+若测试时不限于单线程，而是不断新建线程，在HotSpot上也会产生OOM。
+
+但这样产生OOM和栈空间是否足够不存在直接的关系，主要取决于os本身内存使用状态。
+
+甚至说这种情况下，给每个线程的栈分配的内存越大，反而越容易产生OOM。
+
+不难理解，os分配给每个进程的内存有限制，比如32位Windows的单个进程最大内存限制为2G。HotSpot提供参数可以控制Java堆和方法区这两部分的内存的最大值，那剩余的内存即为2G（os限制）减去最大堆容量，再减去最大方法区容量，由于程序计数器消耗内存很小，可忽略，若把直接内存和虚拟机进程本身耗费的内存也去掉，剩下的内存就由虚拟机栈和本地方法栈来分配了。因此为每个线程分配到的栈内存越大，可以建立的线程数量越少，建立线程时就越容易把剩下的内存耗尽
+
+原谅我，这个死机了好多次，没试出来，不知道是JDK版本的问题还是因为我的电脑是64位的问题。
+
+代码可以附上
+
+```java
+/**
+ * VM Args：-Xss2M（这时候不妨设置大些）
+ */
+public class MyTest {
+
+    public static void main(String[] args) {
+        MyTest mytest = new MyTest();
+        mytest.stackLeakByThread();
+    }
+
+    private void dontStop() {
+        while (true) {
+
+        }
+    }
+
+    public void stackLeakByThread() {
+        while(true){
+            Thread thread = new Thread(() -> dontStop());
+            thread.start();
+        }
+    }
+}
+```
+
+
+
+
+
+> 方法区和运行时常量池溢出
+
+由于运行时常量池是方法区的一部分，因此这两个区域的溢出测试放到一起进行。
+
+
 
 
 
@@ -122,7 +328,7 @@ Java语言不要求常量一定只有编译期才会产生，也就是并非预�
 
 ## 3、HotSpot虚拟机对象
 
-### 1、对象的 创建
+### 1、对象的创建
 
 > 类加载
 
@@ -142,7 +348,11 @@ Java语言不要求常量一定只有编译期才会产生，也就是并非预�
 
   空闲列表就是针对内存不是规整的，已使用的内存和空间的内存相互交错，这时候虚拟机必须维护一个列表，记录上哪些内存是可用的，在分配的时候从列表中找到一块可用的内存分配给对象实例，并更新列表上的记录。
 
+选择哪种分配方式由Java堆是否规整决定，而Java堆是否规整又由所采用的垃圾收集器是否带有压缩整理功能决定的。
+
 另一个需要考虑的问题是对象创建在虚拟机中是非常频繁的行为，即使是仅仅修改一个指针所指向的位置，在并发情况下也不是线程安全的。
+
+可能出现正在给A对象分配内存，指针还没来得及修改，对象B又同时使用了原来的指针来分配内存。
 
 解决这个问题有两种方案：
 
@@ -209,6 +419,8 @@ Java语言不要求常量一定只有编译期才会产生，也就是并非预�
 - 第二部分是类型指针，即对象指向他的类元数据指针
 
   虚拟机通过这个指针来确定这个对象是哪个类的实例。
+  
+  这里要注意的是，查找对象的元数据信息并不一定
 
 另外，如果对象是一个数组，在对象头中还必须有一块用于记录数组长度的数据，因为虚拟机可以通过普通的Java对象的元数据信息确定Java对象的大小，但是从数据的元数据中却无法确定数数组的大小。
 
@@ -220,11 +432,23 @@ Java语言不要求常量一定只有编译期才会产生，也就是并非预�
 
 这部分的存储顺序会受到虚拟机分配策略参数和字段在Java源码中定义的顺序的影响
 
+HotSpot 虚拟机默认的分配策略为longs/doubles、 ints、 shorts/chars、 bytes/booleans、 oops
+
+从分配策略中可以看出，相同宽度的字段总是被分配到一起，在满足这个前提条件的情况下，在父类中定义的变量会出现在子类之前
+
+扩展：
+
+- 如果CompactFileds参数值为true（默认为true），那么子类中较窄的变量也可能会插入到父类变量的空隙之中
+
 
 
 > 对齐填充
 
 这部分并不是必然存在的，也没有特别的含义，它仅仅起着占位符的作用。
+
+因为HotSpot VM 的自动内存管理系统要求对象起始地址必须是8字节的整数倍，也就是说对象的大小必须是8字节的整数倍
+
+对象头部分正好是8子节（32或者64）的整数倍，所以，当对象实例数据部分没有对齐时，就需要通过对齐填充来补全。
 
 
 
@@ -247,6 +471,8 @@ Java语言不要求常量一定只有编译期才会产生，也就是并非预�
 在对象被移动时只会改变句柄中的实例数据指针，而reference本身不需要被修改。
 
 当然，使用指针的速度肯定是更快的，它节省了一次指针定位的时间开销。
+
+对于HotSpot来说，它是使用第二种方式进行对象访问的。
 
 
 
@@ -451,10 +677,6 @@ Java语言中，可作为GC Roots 的对象包括下面几种
 
 
 #### 15.1.4、死亡之前
-
-
-
-
 
 - GC两种类:轻GC(普通的GC) 重GC(全局GC)
 
